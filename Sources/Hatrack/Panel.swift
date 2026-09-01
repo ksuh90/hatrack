@@ -87,8 +87,9 @@ final class PanelController {
         let anchor = anchorProvider()
         let centreX = anchor?.midX ?? visible.maxX - size.width / 2 - 12
         let x = min(max(centreX - size.width / 2, visible.minX + 8), visible.maxX - size.width - 8)
-        // visibleFrame's top edge is exactly the underside of the menu bar
-        let y = visible.maxY - size.height - 6
+        // visibleFrame's top edge is exactly the underside of the menu bar, so
+        // this sits the panel flush against the bar like a normal dropdown.
+        let y = visible.maxY - size.height
         window.setFrame(NSRect(x: x.rounded(), y: y.rounded(),
                                width: size.width, height: size.height), display: true)
     }

@@ -50,14 +50,19 @@ enum BarMetrics {
     /// Three dash periods shorter than it started: the track shows proportion,
     /// not precision, and every point here is menu bar real estate.
     static let trackWidth: CGFloat = 40
+    /// The idle mark only needs to read as "a track" under the parked aircraft,
+    /// so it is shorter than the in-flight track.
+    static let idleTrackWidth: CGFloat = 22
     static let stroke: CGFloat = 1.5
     static let dash: [CGFloat] = [2, 2.6]
     static let planeWidth: CGFloat = 11.5
-    static let planeHeight: CGFloat = 9
+    static let planeHeight: CGFloat = 8.8   // wingtip to wingtip
     static let landedDotRadius: CGFloat = 2.3
-    /// Alone in the bar the aircraft has no text to sit against, so it carries
-    /// the whole item and is drawn larger than the one riding the track.
-    static let idleScale: CGFloat = 1.5
+    /// Idle draws the aircraft non-uniformly: full length (x) so the dotted
+    /// line still reads on both sides, with a slightly wider wingspan (y) so
+    /// the airliner has more presence without lengthening its body.
+    static let idleScaleX: CGFloat = 1.0
+    static let idleScaleY: CGFloat = 1.15
     /// Half the glyph, so neither nose nor tail ever crosses the track's ends.
     static var planeClamp: CGFloat { planeWidth / 2 + 0.15 }
 }
@@ -120,7 +125,7 @@ enum BarRenderer {
 
     static func size(for content: BarContent, palette: BarPalette, height: CGFloat) -> CGSize {
         guard content.phase != nil else {
-            return CGSize(width: (BarMetrics.planeWidth * BarMetrics.idleScale) + 7, height: height)
+            return CGSize(width: BarMetrics.idleTrackWidth + 6, height: height)
         }
         let (lead, trail) = pieces(content, palette)
         var w: CGFloat = 0
@@ -165,13 +170,26 @@ enum BarRenderer {
         let midY = (size.height / 2).rounded()
 
         guard let phase = content.phase else {
-            // Idle: the glyph alone, drawn larger since nothing else is there.
-            let scale = BarMetrics.idleScale
+            // Idle: the aircraft parked on a short dashed track, echoing the
+            // in-flight track's dash/stroke/colour so the bar reads as one family.
+            let track = BarMetrics.idleTrackWidth
+            let x0: CGFloat = 3
+            let line = NSBezierPath()
+            line.move(to: CGPoint(x: x0, y: midY))
+            line.line(to: CGPoint(x: x0 + track, y: midY))
+            line.lineWidth = BarMetrics.stroke
+            line.lineCapStyle = .round
+            line.setLineDash(BarMetrics.dash, count: BarMetrics.dash.count, phase: 0)
+            p.idleTrack.setStroke()
+            line.stroke()
+
+            // The glyph rides the line's midpoint, opaque so the dots pass
+            // cleanly behind it rather than bleeding through.
             let path = planePath(at: .zero)
-            path.transform(using: AffineTransform(scaleByX: scale, byY: scale))
-            path.transform(using: AffineTransform(
-                translationByX: (BarMetrics.planeWidth * scale) / 2 + 3.5, byY: midY))
-            p.text.withAlphaComponent(0.75).setFill()
+            path.transform(using: AffineTransform(scaleByX: BarMetrics.idleScaleX,
+                                                  byY: BarMetrics.idleScaleY))
+            path.transform(using: AffineTransform(translationByX: x0 + track / 2, byY: midY))
+            p.text.setFill()
             path.fill()
             return
         }
@@ -282,13 +300,22 @@ enum BarRenderer {
         }
     }
 
-    /// Airliner seen from above, nose to the right, centred on `point`.
+    /// Narrowbody airliner seen from above, nose to the right, centred on
+    /// `point`: a slim tube with a rounded nose, moderately swept main wings,
+    /// and a separate horizontal tailplane. Shared by the menu bar, the idle
+    /// icon and the app icon, so all three read as the same aircraft.
     static func planePath(at point: CGPoint) -> NSBezierPath {
-        // (x, y) with y measured up from the centreline
+        // (x, y) with y measured up from the centreline; x runs 0 (tail) to
+        // planeWidth (nose). Traversed round the top edge nose->tail, then the
+        // mirrored bottom edge back.
         let points: [(CGFloat, CGFloat)] = [
-            (11.5, 0), (6.5, -1.5), (4.5, -4.5), (3.2, -4.5), (4.2, -1.9),
-            (1.6, -2.4), (0.6, -3.7), (0, -3.7), (0.6, 0), (0, 3.7),
-            (0.6, 3.7), (1.6, 2.4), (4.2, 1.9), (3.2, 4.5), (4.5, 4.5), (6.5, 1.5)
+            (11.5, 0), (11.29, -0.43), (10.82, -0.70), (9.9, -0.85), // rounded nose
+            (7.3, -0.85), (5.2, -4.4), (4.7, -4.4), (5.0, -0.85),    // main wing
+            (2.0, -0.85), (1.0, -2.5), (0.65, -2.5), (0.9, -0.85),   // tailplane
+            (0.0, -0.5), (0.0, 0.5),                                  // tail cone
+            (0.9, 0.85), (0.65, 2.5), (1.0, 2.5), (2.0, 0.85),       // tailplane
+            (5.0, 0.85), (4.7, 4.4), (5.2, 4.4), (7.3, 0.85),        // main wing
+            (9.9, 0.85), (10.82, 0.70), (11.29, 0.43)                // rounded nose
         ]
         let path = NSBezierPath()
         let originX = point.x - BarMetrics.planeWidth / 2
