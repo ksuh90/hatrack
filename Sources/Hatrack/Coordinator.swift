@@ -10,6 +10,15 @@ final class Coordinator: ObservableObject {
     @Published private(set) var state: PersistedState
     @Published private(set) var now: Date = Date()
     @Published private(set) var isPolling = false
+    /// While a range lookup is in flight, after a number is entered but before
+    /// its days are known.
+    @Published private(set) var isResolving = false
+    /// The days the user is choosing between, once resolved. Non-nil means the
+    /// panel is in its picking state; an empty array means the number has no
+    /// departures in the window. Nil means not picking.
+    @Published private(set) var candidates: [FlightSnapshot]?
+    /// The number being picked for, shown while choosing.
+    @Published private(set) var pendingNumber: String?
     /// How much detail the menu bar item is currently dropping to fit, so the
     /// panel can say why a checked option is not showing up.
     @Published private(set) var fitShedLevel = 0
@@ -37,6 +46,19 @@ final class Coordinator: ObservableObject {
         self.keyLoaded = true
         self.now = now
         self.providerOverride = DemoProvider()
+    }
+
+    /// Preview construction for the picking state, so --render-panel can check
+    /// the date board without a live range call.
+    init(previewPicking candidates: [FlightSnapshot], number: String, now: Date) {
+        self.clock = { now }
+        self.state = .fresh(now: now)
+        self.cachedKey = ""
+        self.keyLoaded = true
+        self.now = now
+        self.providerOverride = DemoProvider()
+        self.candidates = candidates
+        self.pendingNumber = number
     }
 
     init(clock: @escaping () -> Date = Date.init) {
@@ -108,8 +130,9 @@ final class Coordinator: ObservableObject {
         now = clock()
         state.quota.rollIfNeeded(at: now)
 
-        // A landed flight clears itself half an hour after touchdown.
-        if let snapshot, snapshot.phase(at: now) == .landed,
+        // A landed flight clears itself half an hour after touchdown - but not
+        // while the user is mid-pick, which clearing would abort.
+        if candidates == nil, let snapshot, snapshot.phase(at: now) == .landed,
            now.timeIntervalSince(snapshot.arrival) > 30 * 60 {
             clearFlight()
             return
@@ -120,23 +143,87 @@ final class Coordinator: ObservableObject {
         }
     }
 
-    func track(_ number: String) async {
+    /// The window the picker offers: today through three days ahead, in the
+    /// user's own calendar.
+    nonisolated static func pickWindow(now: Date) -> (from: Date, to: Date) {
+        let cal = Calendar.current
+        let from = cal.startOfDay(for: now)
+        let to = cal.date(byAdding: .day, value: 3, to: from) ?? from
+        return (from, to)
+    }
+
+    /// Enter the picking state: one range call lists every operating day in the
+    /// window. Nothing is tracked yet - the user must commit a specific day. A
+    /// flight already tracked is left in place, so cancelling returns to it.
+    func resolve(_ number: String) async {
         let cleaned = number.uppercased().replacingOccurrences(of: " ", with: "")
-        guard !cleaned.isEmpty else { return }
-        state.trackedNumber = cleaned
-        state.snapshot = nil
+        guard !cleaned.isEmpty, !isResolving else { return }
+        guard let provider else {
+            state.lastError = ProviderError.missingKey.errorDescription
+            persist()
+            return
+        }
+        let cost = provider.unitsPerRangeLookup
+        if cost > 0, state.quota.units + cost > state.preferences.monthlyUnitCap {
+            state.lastError = ProviderError.quotaExhausted.errorDescription
+            persist()
+            return
+        }
+
+        isResolving = true
+        pendingNumber = cleaned
+        candidates = nil
         state.lastError = nil
-        state.nextPoll = clock()
+        defer { isResolving = false }
+
+        do {
+            let (from, to) = Self.pickWindow(now: clock())
+            let found = try await provider.candidates(number: cleaned, from: from, to: to, now: clock())
+            state.quota.units += cost
+            now = clock()
+            candidates = found
+        } catch {
+            state.lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+            candidates = nil
+            pendingNumber = nil
+        }
+        persist()
+    }
+
+    /// Commit the chosen day and begin tracking it. The range response already
+    /// carries this leg, so nothing more is spent; polling re-anchors this exact
+    /// date from here on.
+    func commit(_ choice: FlightSnapshot) {
+        state.trackedNumber = (pendingNumber?.isEmpty == false ? pendingNumber : nil) ?? choice.number
+        state.snapshot = choice
+        state.trackedDate = AeroDataBoxProvider.dateKey(choice.scheduledDeparture,
+                                                        timeZone: choice.origin.timeZone ?? .current)
+        state.trackedDeparture = choice.scheduledDeparture
+        state.lastError = nil
+        now = clock()
+        state.nextPoll = Self.nextPoll(after: choice, now: now,
+                                       preDepartureCheck: state.preferences.preDepartureCheck)
+        candidates = nil
+        pendingNumber = nil
         persist()
         onUserChange()
-        await poll()
+    }
+
+    /// Abandon picking without tracking anything new.
+    func cancelPicking() {
+        candidates = nil
+        pendingNumber = nil
     }
 
     func clearFlight() {
         state.trackedNumber = nil
         state.snapshot = nil
+        state.trackedDate = nil
+        state.trackedDeparture = nil
         state.nextPoll = nil
         state.lastError = nil
+        candidates = nil
+        pendingNumber = nil
         persist()
         onUserChange()
     }
@@ -151,7 +238,7 @@ final class Coordinator: ObservableObject {
     // MARK: polling
 
     func poll(force: Bool = false) async {
-        guard let number = state.trackedNumber, let provider else { return }
+        guard let number = state.trackedNumber, let date = state.trackedDate, let provider else { return }
         guard !isPolling else { return }
         let cost = provider.unitsPerLookup
         if !force, cost > 0, state.quota.units + cost > state.preferences.monthlyUnitCap {
@@ -164,7 +251,9 @@ final class Coordinator: ObservableObject {
         defer { isPolling = false }
 
         do {
-            let snapshot = try await provider.lookup(number: number, now: clock())
+            // Re-anchor the exact leg the user picked - never a fresh nearest().
+            let target = state.trackedDeparture ?? state.snapshot?.scheduledDeparture ?? clock()
+            let snapshot = try await provider.lookup(number: number, on: date, matching: target, now: clock())
             state.quota.units += cost
             state.snapshot = snapshot
             state.lastError = nil

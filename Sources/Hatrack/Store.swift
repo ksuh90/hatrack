@@ -42,14 +42,21 @@ struct QuotaLedger: Codable, Equatable {
 struct PersistedState: Codable {
     var trackedNumber: String?
     var snapshot: FlightSnapshot?
+    /// The specific date the user picked, as the origin-local YYYY-MM-DD key the
+    /// dated status endpoint expects. Polling re-anchors this leg and only this
+    /// leg - the flight is never silently re-resolved to the nearest departure.
+    var trackedDate: String?
+    /// The scheduled departure of the picked leg, so a re-anchor can pick it out
+    /// when a number flies several sectors on the tracked date.
+    var trackedDeparture: Date?
     var nextPoll: Date?
     var lastError: String?
     var quota: QuotaLedger
     var preferences: Preferences
 
     static func fresh(now: Date = Date()) -> PersistedState {
-        PersistedState(trackedNumber: nil, snapshot: nil, nextPoll: nil, lastError: nil,
-                       quota: .empty(at: now), preferences: Preferences())
+        PersistedState(trackedNumber: nil, snapshot: nil, trackedDate: nil, trackedDeparture: nil,
+                       nextPoll: nil, lastError: nil, quota: .empty(at: now), preferences: Preferences())
     }
 }
 

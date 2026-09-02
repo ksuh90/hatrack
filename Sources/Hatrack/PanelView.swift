@@ -74,7 +74,11 @@ struct PanelView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 11) {
-            if let snapshot {
+            if coordinator.isResolving {
+                resolving
+            } else if let candidates = coordinator.candidates {
+                picker(candidates)
+            } else if let snapshot {
                 header(snapshot)
                 if coordinator.unverified || coordinator.quotaExhausted { quotaBanner }
                 route(snapshot)
@@ -201,6 +205,101 @@ struct PanelView: View {
                 .foregroundStyle(coordinator.lastError == nil ? .secondary : Color(nsColor: BarPalette.dark.amber))
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    // MARK: date picker
+
+    private var resolving: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Finding \(coordinator.pendingNumber ?? "flights")…")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+        }
+    }
+
+    /// The mandatory pick: one row per operating day, tap to track. No silent
+    /// default - even a single option is presented for an explicit tap.
+    private func picker(_ candidates: [FlightSnapshot]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(coordinator.pendingNumber ?? "").font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Button("Cancel") { coordinator.cancelPicking() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+            if candidates.isEmpty {
+                Text("No \(coordinator.pendingNumber ?? "flight") departures in the next 4 days.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(Color(nsColor: BarPalette.dark.amber))
+                    .fixedSize(horizontal: false, vertical: true)
+            } else {
+                Text(candidates.count == 1 ? "One departure - tap to track it"
+                                           : "Choose which departure to track")
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                VStack(spacing: 5) {
+                    ForEach(Array(candidates.enumerated()), id: \.offset) { _, s in
+                        pickerRow(s)
+                    }
+                }
+            }
+        }
+    }
+
+    private func pickerRow(_ s: FlightSnapshot) -> some View {
+        Button { coordinator.commit(s) } label: {
+            HStack(spacing: 9) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(dayLabel(s)).font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    Text(Format.day(s.scheduledDeparture))
+                        .font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                .frame(width: 52, alignment: .leading)
+                Text("\(s.origin.iata)→\(s.destination.iata)")
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary).lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text(Format.clock(s.scheduledDeparture, in: s.origin.timeZone))
+                    .font(.system(size: 12)).monospacedDigit()
+                statusPill(s)
+            }
+            .padding(.vertical, 6).padding(.horizontal, 9)
+            .frame(maxWidth: .infinity)
+            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 7))
+            .overlay(RoundedRectangle(cornerRadius: 7).stroke(Color.white.opacity(0.07), lineWidth: 0.5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// "Today" for today, otherwise a short weekday ("Thu") - kept narrow so the
+    /// row never wraps at 296 pt.
+    private func dayLabel(_ s: FlightSnapshot) -> String {
+        let dep = s.scheduledDeparture
+        if Calendar.current.isDateInToday(dep) { return "Today" }
+        let f = DateFormatter()
+        f.dateFormat = "EEE"
+        return f.string(from: dep)
+    }
+
+    private func statusPill(_ s: FlightSnapshot) -> some View {
+        let phase = s.phase(at: now)
+        let text: String
+        let tint: Color
+        switch phase {
+        case .delayed: text = "+\(s.delayMinutes)"; tint = Color(nsColor: BarPalette.dark.amber)
+        case .inFlight: text = "In flight"; tint = Color(nsColor: BarPalette.dark.blue)
+        case .landed: text = "Landed"; tint = Color(nsColor: BarPalette.dark.green)
+        default: text = "Sched"; tint = Color.white.opacity(0.6)
+        }
+        return Text(text)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(tint)
+            .lineLimit(1)
+            .fixedSize()
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(phase == .scheduled ? Color.white.opacity(0.08) : tint.opacity(0.16),
+                        in: RoundedRectangle(cornerRadius: 5))
     }
 
     private var quotaMeter: some View {
@@ -335,7 +434,7 @@ struct PanelView: View {
     private func submit() {
         let number = entry
         entry = ""
-        Task { await coordinator.track(number) }
+        Task { await coordinator.resolve(number) }
     }
 }
 

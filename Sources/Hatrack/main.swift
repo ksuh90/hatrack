@@ -46,7 +46,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         if ProcessInfo.processInfo.environment["HATRACK_DEMO"] == "1" {
             coordinator.providerOverride = DemoProvider()
-            Task { await coordinator.track("NH7") }
+            // Exercise the real flow: resolve the days, then commit today's leg.
+            Task {
+                await coordinator.resolve("NH7")
+                if let today = coordinator.candidates?.first { coordinator.commit(today) }
+            }
         }
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)

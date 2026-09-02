@@ -19,26 +19,52 @@ enum ProviderError: LocalizedError {
 }
 
 protocol FlightProvider: Sendable {
-    /// Units this provider charges for one status lookup.
+    /// Units one dated status lookup charges - re-anchoring the tracked leg.
     var unitsPerLookup: Int { get }
-    /// Resolve a bare flight number to its nearest upcoming (or in-progress) leg.
-    func lookup(number: String, now: Date) async throws -> FlightSnapshot
+    /// Units one range lookup charges - listing the days the picker offers.
+    var unitsPerRangeLookup: Int { get }
+    /// Every operating leg of `number` on local dates within [from, to]. Feeds the
+    /// date picker; one call covers the whole window.
+    func candidates(number: String, from: Date, to: Date, now: Date) async throws -> [FlightSnapshot]
+    /// Re-anchor one already-chosen leg: fetch the tracked local date and return
+    /// the leg whose schedule matches `target`. Polling only ever calls this, so a
+    /// tracked flight is never re-resolved to the nearest departure.
+    func lookup(number: String, on localDate: String, matching target: Date, now: Date) async throws -> FlightSnapshot
 }
 
-/// AeroDataBox via RapidAPI. Flight status is a Tier 2 endpoint: 2 units a call.
+/// AeroDataBox via RapidAPI. Dated flight status is a Tier 2 endpoint (2 units);
+/// the range endpoint that lists the picker's days is Tier 3 (6 units).
 struct AeroDataBoxProvider: FlightProvider {
     let apiKey: String
     let host = "aerodatabox.p.rapidapi.com"
     var unitsPerLookup: Int { 2 }
+    var unitsPerRangeLookup: Int { 6 }
 
-    func lookup(number: String, now: Date) async throws -> FlightSnapshot {
-        guard !apiKey.isEmpty else { throw ProviderError.missingKey }
+    func candidates(number: String, from: Date, to: Date, now: Date) async throws -> [FlightSnapshot] {
         guard let cleaned = Self.sanitise(number) else { throw ProviderError.notFound }
+        // One range call `/flights/number/{n}/{from}/{to}` returns every leg in
+        // the window; the Basic plan allows a span well past our four days.
+        let path = "/flights/number/\(cleaned)/\(Self.dateKey(from))/\(Self.dateKey(to))"
+        return try await fetchSnapshots(path: path, now: now)
+    }
+
+    func lookup(number: String, on localDate: String, matching target: Date, now: Date) async throws -> FlightSnapshot {
+        guard let cleaned = Self.sanitise(number) else { throw ProviderError.notFound }
+        let snaps = try await fetchSnapshots(path: "/flights/number/\(cleaned)/\(localDate)", now: now)
+        guard let match = FlightSnapshot.nearest(to: target, in: snaps) else { throw ProviderError.notFound }
+        return match
+    }
+
+    /// One GET, decoded into snapshots sorted by departure. A 204/404 means the
+    /// number simply has no legs in the requested window, which is an empty list
+    /// rather than an error - callers decide whether empty is "not found".
+    private func fetchSnapshots(path: String, now: Date) async throws -> [FlightSnapshot] {
+        guard !apiKey.isEmpty else { throw ProviderError.missingKey }
 
         var components = URLComponents()
         components.scheme = "https"
         components.host = host
-        components.path = "/flights/number/\(cleaned)"
+        components.path = path
         components.queryItems = [
             URLQueryItem(name: "withAircraftImage", value: "false"),
             URLQueryItem(name: "withLocation", value: "false")
@@ -55,14 +81,14 @@ struct AeroDataBoxProvider: FlightProvider {
         }
         switch http.statusCode {
         case 200: break
-        case 204, 404: throw ProviderError.notFound
+        case 204, 404: return []
         case 429: throw ProviderError.quotaExhausted
         default: throw ProviderError.http(http.statusCode)
         }
 
         let legs = try JSONDecoder().decode([Leg].self, from: data)
-        guard let leg = Self.nearest(in: legs, now: now) else { throw ProviderError.notFound }
-        return try leg.snapshot(fetchedAt: now)
+        return legs.compactMap { try? $0.snapshot(fetchedAt: now) }
+            .sorted { $0.scheduledDeparture < $1.scheduledDeparture }
     }
 
     /// A flight number is letters and digits, nothing else. Anything that could
@@ -74,21 +100,13 @@ struct AeroDataBoxProvider: FlightProvider {
         return cleaned
     }
 
-    /// The one the user means: still in progress, or the soonest still to come.
-    /// Falls back to the most recent past leg so a just-landed flight still reads.
-    static func nearest(in legs: [Leg], now: Date) -> Leg? {
-        let dated = legs.compactMap { leg -> (Leg, Date, Date)? in
-            guard let dep = leg.departureDate, let arr = leg.arrivalDate else { return nil }
-            return (leg, dep, arr)
-        }
-        if let inProgress = dated.filter({ $0.1 <= now && now <= $0.2.addingTimeInterval(3600) })
-            .min(by: { $0.1 < $1.1 }) {
-            return inProgress.0
-        }
-        if let upcoming = dated.filter({ $0.1 > now }).min(by: { $0.1 < $1.1 }) {
-            return upcoming.0
-        }
-        return dated.max(by: { $0.1 < $1.1 })?.0
+    /// A local calendar date as the endpoint's YYYY-MM-DD path segment.
+    static func dateKey(_ date: Date, timeZone: TimeZone = .current) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = timeZone
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: date)
     }
 
     // MARK: response shape
@@ -183,24 +201,47 @@ struct AeroDataBoxProvider: FlightProvider {
 }
 
 /// Stand-in used by --render-states and by demo mode, so the UI can be exercised
-/// end to end without spending a unit.
+/// end to end without spending a unit. Offers one departure a day across the
+/// picker window; the earliest is in progress so the tracked view has something
+/// to draw once a day is committed.
 struct DemoProvider: FlightProvider {
     var unitsPerLookup: Int { 0 }
+    var unitsPerRangeLookup: Int { 0 }
 
-    func lookup(number: String, now: Date) async throws -> FlightSnapshot {
-        FlightSnapshot(
+    func candidates(number: String, from: Date, to: Date, now: Date) async throws -> [FlightSnapshot] {
+        let cal = Calendar.current
+        let days = max(0, cal.dateComponents([.day], from: cal.startOfDay(for: from),
+                                             to: cal.startOfDay(for: to)).day ?? 3)
+        return (0...days).compactMap { day in
+            // Today's leg is already airborne, so committing it exercises the
+            // in-flight view; later days are scheduled departures.
+            let dep = day == 0
+                ? now.addingTimeInterval(-6 * 3600)
+                : cal.date(byAdding: .day, value: day, to: cal.startOfDay(for: now))?
+                    .addingTimeInterval(11 * 3600 + 50 * 60)
+            return dep.map { Self.leg(number: number, departing: $0, now: now) }
+        }
+    }
+
+    func lookup(number: String, on localDate: String, matching target: Date, now: Date) async throws -> FlightSnapshot {
+        Self.leg(number: number, departing: target, now: now)
+    }
+
+    private static func leg(number: String, departing dep: Date, now: Date) -> FlightSnapshot {
+        let departed = dep <= now
+        return FlightSnapshot(
             number: number.uppercased(),
             origin: Airport(iata: "DXB", timeZoneID: "Asia/Dubai"),
             destination: Airport(iata: "HND", timeZoneID: "Asia/Tokyo"),
-            scheduledDeparture: now.addingTimeInterval(-6 * 3600),
+            scheduledDeparture: dep,
             revisedDeparture: nil,
-            actualDeparture: now.addingTimeInterval(-6 * 3600),
-            scheduledArrival: now.addingTimeInterval(3.7 * 3600),
+            actualDeparture: departed ? dep : nil,
+            scheduledArrival: dep.addingTimeInterval(9.7 * 3600),
             predictedArrival: nil,
             actualArrival: nil,
             aircraft: "777-300ER",
             registration: "JA784A",
-            providerStatus: "EnRoute",
+            providerStatus: departed ? "EnRoute" : "Expected",
             fetchedAt: now
         )
     }

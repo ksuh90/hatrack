@@ -126,6 +126,27 @@ enum SelfCheck {
         rolling.rollIfNeeded(at: now)
         expect(rolling.units == 0, "the ledger resets on a new month")
 
+        print("date picker")
+        // The window the picker offers spans today through three days ahead.
+        let window = Coordinator.pickWindow(now: now)
+        expect(Calendar.current.dateComponents([.day], from: window.from, to: window.to).day == 3,
+               "picker window spans today plus three days")
+
+        // Re-anchoring a tracked leg matches on its schedule, so a number that
+        // flies several days is never re-resolved to the nearest one.
+        let today = base(now: now, departIn: 2 * hour, duration: 10 * hour)
+        let tomorrow = base(now: now, departIn: 26 * hour, duration: 10 * hour)
+        let dayAfter = base(now: now, departIn: 50 * hour, duration: 10 * hour)
+        let pool = [dayAfter, today, tomorrow]
+        expect(FlightSnapshot.nearest(to: now.addingTimeInterval(26 * hour), in: pool)?
+                .scheduledDeparture == tomorrow.scheduledDeparture,
+               "re-anchor picks the leg matching the chosen date")
+        expect(FlightSnapshot.nearest(to: now.addingTimeInterval(2 * hour), in: pool)?
+                .scheduledDeparture == today.scheduledDeparture,
+               "re-anchor picks today's leg for today's choice")
+        expect(FlightSnapshot.nearest(to: now, in: []) == nil,
+               "no legs re-anchors to nothing")
+
         print("flight number validation")
         expect(AeroDataBoxProvider.sanitise("nh7") == "NH7", "lowercase is normalised")
         expect(AeroDataBoxProvider.sanitise(" BA 15 ") == "BA15", "spaces are stripped")
