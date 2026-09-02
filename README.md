@@ -4,7 +4,7 @@ A flight's progress in the macOS menu bar. Give it a flight number and it draws 
 
 ![Menu bar states](docs/menu-bar-states.png)
 
-No date needed - a bare flight number resolves to the nearest upcoming departure. Click the item for detail.
+Enter a flight number and pick which day to follow - today out to three days ahead - from a small departure board. Click the item for detail.
 
 ![Dropdown](docs/dropdown.png)
 
@@ -25,9 +25,10 @@ The key is stored in your Keychain. Because local builds are ad-hoc signed, macO
 
 ## Frugal by design
 
-AeroDataBox's free tier is 600 units a month and a flight lookup costs 2, so 300 calls. Hatrack aims well under that:
+AeroDataBox's free tier is 600 units a month; a dated status lookup costs 2 and the range call that lists your date options costs 6. Hatrack aims well under that:
 
-- One call resolves the flight when you add it
+- One range call lists the next few days when you add a flight; the day you pick is seeded from it, so choosing costs nothing more
+- After that only the picked date is ever re-checked - a dated lookup, never a fresh search
 - **Nothing** is spent until the scheduled departure - flights don't leave early
 - The first poll fires ten minutes past the scheduled time and either finds it airborne or reads the new estimate and sleeps again; a delay costs one call, not a cadence
 - Cruise every 90 minutes, the last 45 minutes every 20, then one call to confirm touchdown

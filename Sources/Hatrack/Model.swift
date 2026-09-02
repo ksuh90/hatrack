@@ -68,6 +68,17 @@ struct FlightSnapshot: Codable, Equatable {
         return delayMinutes >= 5 ? .delayed : .scheduled
     }
 
+    /// Among a day's legs, the one whose scheduled departure is closest to a
+    /// chosen instant. A flight number can fly several sectors on one date, so
+    /// re-anchoring the leg the user picked means matching on its schedule
+    /// rather than trusting position in the array.
+    static func nearest(to target: Date, in snapshots: [FlightSnapshot]) -> FlightSnapshot? {
+        snapshots.min {
+            abs($0.scheduledDeparture.timeIntervalSince(target))
+                < abs($1.scheduledDeparture.timeIntervalSince(target))
+        }
+    }
+
     /// 0 at the origin, 1 at the destination. Pure clock arithmetic, which is
     /// why the bar keeps moving between polls.
     func progress(at now: Date) -> Double {
@@ -108,6 +119,13 @@ enum Format {
         let f = DateFormatter()
         f.dateFormat = "HH:mm"
         f.timeZone = zone ?? .current
+        return f.string(from: date)
+    }
+
+    /// "2 Sep" - the calendar day, for a picker row's date line.
+    static func day(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "d MMM"
         return f.string(from: date)
     }
 

@@ -23,6 +23,30 @@ enum PanelSheet {
         )
     }
 
+    /// One departure a day across the picker window, for the choosing state.
+    private static func candidates(now: Date) -> [FlightSnapshot] {
+        let cal = Calendar.current
+        return (0...3).compactMap { day -> FlightSnapshot? in
+            guard let dep = cal.date(byAdding: .day, value: day, to: cal.startOfDay(for: now))?
+                .addingTimeInterval(11 * 3600 + 50 * 60) else { return nil }
+            let delay = day == 0 ? 25 : 0
+            return FlightSnapshot(
+                number: "EK312",
+                origin: Airport(iata: "DXB", timeZoneID: "Asia/Dubai"),
+                destination: Airport(iata: "HND", timeZoneID: "Asia/Tokyo"),
+                scheduledDeparture: dep,
+                revisedDeparture: delay > 0 ? dep.addingTimeInterval(Double(delay) * 60) : nil,
+                actualDeparture: nil,
+                scheduledArrival: dep.addingTimeInterval(9.7 * 3600),
+                predictedArrival: nil,
+                actualArrival: nil,
+                aircraft: "777-300ER",
+                registration: "JA784A",
+                providerStatus: "Expected",
+                fetchedAt: now)
+        }
+    }
+
     @MainActor
     private static func render(_ coordinator: Coordinator) -> NSImage? {
         let host = NSHostingView(rootView: PanelView(coordinator: coordinator))
@@ -47,6 +71,7 @@ enum PanelSheet {
         spent.nextPoll = now.addingTimeInterval(-40 * 60)   // overdue, so it reads as estimated
 
         let panels = [
+            ("Choosing", Coordinator(previewPicking: candidates(now: now), number: "EK312", now: now)),
             ("In flight", Coordinator(preview: normal, now: now)),
             ("Out of credit", Coordinator(preview: spent, now: now))
         ].compactMap { label, coordinator -> (String, NSImage)? in
