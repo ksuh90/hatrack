@@ -115,6 +115,16 @@ enum Format {
         seconds <= 60 ? "Landing" : duration(seconds)
     }
 
+    /// A delay, in the same units it deserves: "32" while it is minutes,
+    /// "3h" or "1h30m" once it crosses an hour. The sign lives at the call
+    /// site, which already writes the leading "+".
+    static func delay(_ minutes: Int) -> String {
+        let m = abs(minutes)
+        if m < 60 { return "\(m)" }
+        let h = m / 60, rem = m % 60
+        return rem > 0 ? "\(h)h\(rem)m" : "\(h)h"
+    }
+
     static func clock(_ date: Date, in zone: TimeZone?) -> String {
         let f = DateFormatter()
         f.dateFormat = "HH:mm"

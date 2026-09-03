@@ -165,6 +165,9 @@ enum SelfCheck {
         expect(Format.untilArrival(6 * hour) == "6h00m", "arrival further out counts down")
         expect(Format.untilDeparture(-300) == "Due", "an overdue departure reads Due, not Landing")
         expect(Format.untilDeparture(2 * hour) == "2h00m", "a pending departure counts down")
+        expect(Format.delay(32) == "32", "a sub-hour delay stays in bare minutes")
+        expect(Format.delay(180) == "3h", "a round-hour delay reads in hours, not 180")
+        expect(Format.delay(90) == "1h30m", "an hour-plus delay keeps the trailing minutes")
 
         print(failures == 0 ? "\nall checks passed" : "\n\(failures) check(s) failed")
         return failures == 0 ? 0 : 1

@@ -117,7 +117,7 @@ struct PanelView: View {
         let pct = Int((s.progress(at: now) * 100).rounded())
         switch phase {
         case .scheduled: return "Scheduled"
-        case .delayed: return "Delayed +\(s.delayMinutes)"
+        case .delayed: return "Delayed +" + Format.delay(s.delayMinutes)
         case .inFlight: return coordinator.unverified ? "Estimated · \(pct)%" : "In flight · \(pct)%"
         case .landed: return "Landed"
         case .notFound: return "Not found"
@@ -287,7 +287,7 @@ struct PanelView: View {
         let text: String
         let tint: Color
         switch phase {
-        case .delayed: text = "+\(s.delayMinutes)"; tint = Color(nsColor: BarPalette.dark.amber)
+        case .delayed: text = "+" + Format.delay(s.delayMinutes); tint = Color(nsColor: BarPalette.dark.amber)
         case .inFlight: text = "In flight"; tint = Color(nsColor: BarPalette.dark.blue)
         case .landed: text = "Landed"; tint = Color(nsColor: BarPalette.dark.green)
         default: text = "Sched"; tint = Color.white.opacity(0.6)

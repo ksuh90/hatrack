@@ -348,7 +348,7 @@ final class Coordinator: ObservableObject {
             content.readout = Format.untilDeparture(snapshot.departure.timeIntervalSince(now))
         case .delayed:
             content.readout = Format.untilDeparture(snapshot.departure.timeIntervalSince(now))
-            content.delayNote = "+\(snapshot.delayMinutes)"
+            content.delayNote = "+" + Format.delay(snapshot.delayMinutes)
         case .inFlight:
             let remaining = snapshot.arrival.timeIntervalSince(now)
             content.readout = (content.unverified ? "~" : "") + Format.untilArrival(remaining)
