@@ -18,6 +18,13 @@ enum ProviderError: LocalizedError {
     }
 }
 
+/// The account's real quota, read from the provider's response headers — the
+/// source of truth, as opposed to the app's local estimate.
+struct RemoteQuota: Codable, Equatable, Sendable {
+    var limit: Int
+    var remaining: Int
+}
+
 protocol FlightProvider: Sendable {
     /// Units one dated status lookup charges - re-anchoring the tracked leg.
     var unitsPerLookup: Int { get }
@@ -37,6 +44,8 @@ protocol FlightProvider: Sendable {
 struct AeroDataBoxProvider: FlightProvider {
     let apiKey: String
     let host = "aerodatabox.p.rapidapi.com"
+    /// Called with the account's real quota whenever a response carries it.
+    var onQuota: (@Sendable (RemoteQuota) -> Void)? = nil
     var unitsPerLookup: Int { 2 }
     var unitsPerRangeLookup: Int { 6 }
 
@@ -79,6 +88,9 @@ struct AeroDataBoxProvider: FlightProvider {
         guard let http = response as? HTTPURLResponse else {
             throw ProviderError.malformed("no HTTP response")
         }
+        // Every response (even 204/404/429) carries the quota headers, so read
+        // the real balance here regardless of the status.
+        if let quota = Self.readQuota(from: http) { onQuota?(quota) }
         switch http.statusCode {
         case 200: break
         case 204, 404: return []
@@ -89,6 +101,27 @@ struct AeroDataBoxProvider: FlightProvider {
         let legs = try JSONDecoder().decode([Leg].self, from: data)
         return legs.compactMap { try? $0.snapshot(fetchedAt: now) }
             .sorted { $0.scheduledDeparture < $1.scheduledDeparture }
+    }
+
+    /// AeroDataBox returns several `X-RateLimit-<object>-Limit`/`-Remaining`
+    /// pairs: `api-units` is the real cost budget (e.g. 600) that actually binds,
+    /// alongside a flat `requests` call-count cap and a blanket
+    /// `rapid-free-plans-hard-limit` (500000). Units are what the app spends, so
+    /// track `api-units`; fall back to `requests`.
+    static func readQuota(from http: HTTPURLResponse) -> RemoteQuota? {
+        for object in ["api-units", "requests"] {
+            if let limit = intHeader(http, "x-ratelimit-\(object)-limit"),
+               let remaining = intHeader(http, "x-ratelimit-\(object)-remaining") {
+                return RemoteQuota(limit: limit, remaining: remaining)
+            }
+        }
+        return nil
+    }
+
+    /// `value(forHTTPHeaderField:)` matches case-insensitively, so the lowercase
+    /// names above find the headers whatever case the server sends.
+    private static func intHeader(_ http: HTTPURLResponse, _ name: String) -> Int? {
+        http.value(forHTTPHeaderField: name).flatMap(Int.init)
     }
 
     /// A flight number is letters and digits, nothing else. Anything that could

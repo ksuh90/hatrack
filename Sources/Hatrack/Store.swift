@@ -52,11 +52,15 @@ struct PersistedState: Codable {
     var nextPoll: Date?
     var lastError: String?
     var quota: QuotaLedger
+    /// The account's real quota, last reported by the provider (source of truth).
+    /// Optional, so decoding older state.json without the key simply yields nil.
+    var remoteQuota: RemoteQuota?
     var preferences: Preferences
 
     static func fresh(now: Date = Date()) -> PersistedState {
         PersistedState(trackedNumber: nil, snapshot: nil, trackedDate: nil, trackedDeparture: nil,
-                       nextPoll: nil, lastError: nil, quota: .empty(at: now), preferences: Preferences())
+                       nextPoll: nil, lastError: nil, quota: .empty(at: now), remoteQuota: nil,
+                       preferences: Preferences())
     }
 }
 

@@ -74,6 +74,7 @@ final class Coordinator: ObservableObject {
 
     var snapshot: FlightSnapshot? { state.snapshot }
     var quota: QuotaLedger { state.quota }
+    var remoteQuota: RemoteQuota? { state.remoteQuota }
     var lastError: String? { state.lastError }
 
     /// Whether a key exists, without reading its value - and so without a
@@ -96,13 +97,24 @@ final class Coordinator: ObservableObject {
         if let providerOverride { return providerOverride }
         let key = apiKey                    // reads the keychain, once, on demand
         guard !key.isEmpty else { return nil }
-        return AeroDataBoxProvider(apiKey: key)
+        return AeroDataBoxProvider(apiKey: key, onQuota: { [weak self] quota in
+            Task { @MainActor in self?.applyRemoteQuota(quota) }
+        })
     }
 
-    /// True once the month's ceiling is reached. The bar keeps interpolating,
+    /// Record the account's real quota, reported by the provider's response.
+    func applyRemoteQuota(_ quota: RemoteQuota) {
+        guard state.remoteQuota != quota else { return }
+        state.remoteQuota = quota
+        persist()
+    }
+
+    /// True once the ceiling is reached. Prefer the provider's real remaining
+    /// when we have it; else the local estimate. The bar keeps interpolating,
     /// it just stops claiming the numbers are verified.
     var quotaExhausted: Bool {
-        state.quota.units >= state.preferences.monthlyUnitCap
+        if let remote = state.remoteQuota { return remote.remaining <= 0 }
+        return state.quota.units >= state.preferences.monthlyUnitCap
     }
 
     var unverified: Bool {

@@ -303,13 +303,17 @@ struct PanelView: View {
     }
 
     private var quotaMeter: some View {
-        let used = coordinator.quota.units
-        let cap = coordinator.preferences.monthlyUnitCap
+        // Prefer the provider's real quota (from response headers); fall back to
+        // the local estimate only until the first call reports the truth.
+        let remote = coordinator.remoteQuota
+        let used = remote.map { $0.limit - $0.remaining } ?? coordinator.quota.units
+        let cap = remote?.limit ?? coordinator.preferences.monthlyUnitCap
         let fraction = cap > 0 ? min(Double(used) / Double(cap), 1) : 0
         let spent = coordinator.quotaExhausted
+        let title = remote == nil ? "API units, \(monthName)" : "API units"
         return VStack(alignment: .leading, spacing: 5) {
             HStack {
-                Text("API units, \(monthName)").font(.system(size: 12)).foregroundStyle(.secondary)
+                Text(title).font(.system(size: 12)).foregroundStyle(.secondary)
                 Spacer()
                 Text("\(used) / \(cap)")
                     .font(.system(size: 12))
