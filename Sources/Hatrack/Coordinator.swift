@@ -265,8 +265,12 @@ final class Coordinator: ObservableObject {
         do {
             // Re-anchor the exact leg the user picked - never a fresh nearest().
             let target = state.trackedDeparture ?? state.snapshot?.scheduledDeparture ?? clock()
-            let snapshot = try await provider.lookup(number: number, on: date, matching: target, now: clock())
+            var snapshot = try await provider.lookup(number: number, on: date, matching: target, now: clock())
             state.quota.units += cost
+            if let repaired = await repairSplitLeg(snapshot, number: number, target: target,
+                                                   provider: provider, force: force) {
+                snapshot = repaired
+            }
             state.snapshot = snapshot
             state.lastError = nil
             now = clock()
@@ -284,6 +288,54 @@ final class Coordinator: ObservableObject {
             }
         }
         persist()
+    }
+
+    /// A departure that slips past local midnight leaves AeroDataBox holding two
+    /// half-records of one leg: the tracked date keeps the real wheels-up time
+    /// with the previous day's arrival stitched on, the following date the real
+    /// arrival under a merely predicted departure. Costs a second lookup, so it
+    /// is only asked for when the record we hold contradicts itself.
+    private func repairSplitLeg(_ snapshot: FlightSnapshot, number: String, target: Date,
+                                provider: FlightProvider, force: Bool) async -> FlightSnapshot? {
+        guard !snapshot.timesAgree, let following = Self.dateAfterDepartureCrossedMidnight(snapshot)
+        else { return nil }
+        let cost = provider.unitsPerLookup
+        if !force, cost > 0, state.quota.units + cost > state.preferences.monthlyUnitCap { return nil }
+        let alternate = try? await provider.lookup(number: number, on: following,
+                                                   matching: target, now: clock())
+        state.quota.units += cost      // the call was made, whatever came back
+        guard let alternate else { return nil }
+        return Self.reconcile(snapshot, with: alternate, target: target)
+    }
+
+    /// The origin-local day after the one the leg is filed under - the leg keeps
+    /// its original date, so this is not the day the departure moved to - and
+    /// only when the departure has moved onto a later local date at all.
+    nonisolated static func dateAfterDepartureCrossedMidnight(_ snapshot: FlightSnapshot) -> String? {
+        let zone = snapshot.origin.timeZone ?? .current
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = zone
+        let filed = cal.startOfDay(for: snapshot.scheduledDeparture)
+        let moved = [snapshot.actualDeparture, snapshot.revisedDeparture].compactMap { $0 }
+        guard moved.contains(where: { cal.startOfDay(for: $0) > filed }),
+              let next = cal.date(byAdding: .day, value: 1, to: snapshot.scheduledDeparture)
+        else { return nil }
+        return AeroDataBoxProvider.dateKey(next, timeZone: zone)
+    }
+
+    /// Prefer the half that holds together, keeping the real departure from the
+    /// half being dropped. The following date also carries its own scheduled
+    /// departure a day away, so an alternate that far out is a different leg.
+    nonisolated static func reconcile(_ snapshot: FlightSnapshot, with alternate: FlightSnapshot,
+                                      target: Date) -> FlightSnapshot? {
+        guard alternate.timesAgree,
+              abs(alternate.scheduledDeparture.timeIntervalSince(target)) < 6 * 3600 else { return nil }
+        var repaired = alternate
+        if repaired.actualDeparture == nil, let rolled = snapshot.actualDeparture,
+           rolled < repaired.arrival {
+            repaired.actualDeparture = rolled
+        }
+        return repaired
     }
 
     /// The whole polling policy, in one readable place.

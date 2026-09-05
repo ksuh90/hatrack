@@ -54,7 +54,11 @@ struct FlightSnapshot: Codable, Equatable {
         }
     }
 
+    /// Whether the record's own times can both be true at once.
+    var timesAgree: Bool { arrival > departure }
+
     var hasArrived: Bool {
+        guard timesAgree else { return false }
         if actualArrival != nil { return true }
         switch providerStatus?.lowercased() {
         case "arrived", "landed": return true

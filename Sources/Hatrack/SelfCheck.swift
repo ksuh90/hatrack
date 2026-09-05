@@ -147,6 +147,70 @@ enum SelfCheck {
         expect(FlightSnapshot.nearest(to: now, in: []) == nil,
                "no legs re-anchors to nothing")
 
+        print("split leg across local midnight")
+        // EK317 KIX→DXB, 2026-09-05, verbatim from the provider: a 33-minute
+        // delay pushed wheels-up past midnight in Osaka and AeroDataBox filed
+        // the leg as two half-records, neither of them whole.
+        let ek317 = (try? JSONDecoder().decode([AeroDataBoxProvider.Leg].self, from: Data("""
+        [{"number":"EK 317","status":"Arrived",
+          "departure":{"airport":{"iata":"KIX","timeZone":"Asia/Tokyo"},
+                       "scheduledTime":{"utc":"2026-09-05 14:45Z","local":"2026-09-05 23:45+09:00"},
+                       "revisedTime":{"utc":"2026-09-04 15:04Z","local":"2026-09-05 00:04+09:00"},
+                       "runwayTime":{"utc":"2026-09-05 15:18Z","local":"2026-09-06 00:18+09:00"}},
+          "arrival":{"airport":{"iata":"DXB","timeZone":"Asia/Dubai"},
+                     "scheduledTime":{"utc":"2026-09-05 00:35Z","local":"2026-09-05 04:35+04:00"},
+                     "revisedTime":{"utc":"2026-09-05 00:26Z","local":"2026-09-05 04:26+04:00"},
+                     "runwayTime":{"utc":"2026-09-05 00:20Z","local":"2026-09-05 04:20+04:00"}},
+          "aircraft":{"model":"Airbus A380","reg":"A6-EVK"}},
+         {"number":"EK 317","status":"Expected",
+          "departure":{"airport":{"iata":"KIX","timeZone":"Asia/Tokyo"},
+                       "predictedTime":{"utc":"2026-09-05 14:49Z","local":"2026-09-05 23:49+09:00"}},
+          "arrival":{"airport":{"iata":"DXB","timeZone":"Asia/Dubai"},
+                     "scheduledTime":{"utc":"2026-09-06 00:35Z","local":"2026-09-06 04:35+04:00"}},
+          "aircraft":{"model":"Airbus A380","reg":"A6-EVK"}},
+         {"number":"EK 317","status":"Expected",
+          "departure":{"airport":{"iata":"KIX","timeZone":"Asia/Tokyo"},
+                       "scheduledTime":{"utc":"2026-09-06 14:45Z","local":"2026-09-06 23:45+09:00"}},
+          "arrival":{"airport":{"iata":"DXB","timeZone":"Asia/Dubai"},
+                     "scheduledTime":{"utc":"2026-09-07 00:35Z","local":"2026-09-07 04:35+04:00"}}}]
+        """.utf8)))?.compactMap { try? $0.snapshot(fetchedAt: now) } ?? []
+
+        expect(ek317.count == 3, "a leg carrying only a predicted departure survives decoding")
+        if ek317.count == 3 {
+            let stitched = ek317[0], whole = ek317[1], nextDay = ek317[2]
+            // 17:22Z: two hours into a ten-hour sector, and cruising.
+            let airborne = AeroDataBoxProvider.TimeRef.parse("2026-09-05 17:22Z") ?? now
+
+            expect(!stitched.hasArrived,
+                   "an arrival 15 hours before its own departure is not a landing")
+            expect(stitched.phase(at: airborne) == .inFlight,
+                   "the airborne leg reads as in flight, not landed")
+            expect(stitched.progress(at: airborne) == 0,
+                   "a negative block time no longer draws a full bar")
+            expect(Coordinator.nextPoll(after: stitched, now: airborne,
+                                        preDepartureCheck: false) != nil,
+                   "polling continues, so the tracked leg can self-correct")
+
+            expect(Coordinator.dateAfterDepartureCrossedMidnight(stitched) == "2026-09-06",
+                   "a departure over local midnight sends the next poll to the following date")
+            expect(Coordinator.dateAfterDepartureCrossedMidnight(cruise) == nil,
+                   "a departure that stays on its own date asks for no second call")
+
+            expect(whole.timesAgree && !whole.hasArrived,
+                   "the record holding the real arrival is internally consistent")
+
+            let target = stitched.scheduledDeparture
+            let repaired = Coordinator.reconcile(stitched, with: whole, target: target)
+            expect(repaired?.arrival == whole.arrival,
+                   "reconciling takes the arrival from the consistent record")
+            expect(repaired?.actualDeparture == stitched.actualDeparture,
+                   "reconciling keeps the only real wheels-up time")
+            expect(repaired?.phase(at: airborne) == .inFlight,
+                   "the reconciled leg is in flight with a countdown to its real arrival")
+            expect(Coordinator.reconcile(stitched, with: nextDay, target: target) == nil,
+                   "the following day's own departure is not mistaken for the same leg")
+        }
+
         print("flight number validation")
         expect(AeroDataBoxProvider.sanitise("nh7") == "NH7", "lowercase is normalised")
         expect(AeroDataBoxProvider.sanitise(" BA 15 ") == "BA15", "spaces are stripped")

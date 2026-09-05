@@ -156,9 +156,9 @@ struct AeroDataBoxProvider: FlightProvider {
 
         func snapshot(fetchedAt: Date) throws -> FlightSnapshot {
             guard let departure, let arrival,
-                  let depScheduled = departure.scheduledTime?.date,
-                  let arrScheduled = arrival.scheduledTime?.date else {
-                throw ProviderError.malformed("missing scheduled times")
+                  let depScheduled = departure.scheduledTime?.date ?? departure.best,
+                  let arrScheduled = arrival.scheduledTime?.date ?? arrival.best else {
+                throw ProviderError.malformed("missing times")
             }
             return FlightSnapshot(
                 number: (number ?? "").replacingOccurrences(of: " ", with: ""),
