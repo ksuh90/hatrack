@@ -1,5 +1,6 @@
 .build/
 *.app/
+*.pkg
 .DS_Store
 
 # design sketch: 284K of embedded base64 screenshots, superseded by docs/

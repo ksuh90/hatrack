@@ -1,0 +1,119 @@
+# Builds Hatrack.pkg on a GitHub-hosted Mac.
+#
+# A pushed version tag (v1.2.3) attaches Hatrack.pkg to that tag's GitHub
+# Release, creating the release if needed; the README's Download link points at
+# the newest one. A manual run only uploads the package as a workflow artifact,
+# for testing.
+#
+# Signing: with the HATRACK_SIGNING_P12 and HATRACK_SIGNING_P12_PASSWORD secrets
+# set (see the README), the app is signed with the same "Hatrack Local Signing"
+# certificate as local builds, so macOS keeps treating every release as the same
+# app. Without them it is signed ad hoc, and the job log and release notes say so.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  pkg:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set version
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then
+            echo "HATRACK_VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "HATRACK_VERSION=0.0.0" >> "$GITHUB_ENV"
+          fi
+
+      # The build script looks for the identity only in this keychain, which is
+      # left empty when the secrets are absent, so it signs ad hoc.
+      - name: Import signing identity
+        env:
+          P12: ${{ secrets.HATRACK_SIGNING_P12 }}
+          P12_PASSWORD: ${{ secrets.HATRACK_SIGNING_P12_PASSWORD }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/hatrack-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "HATRACK_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
+          if [ -z "$P12" ]; then
+            echo "::warning title=Ad-hoc signing::HATRACK_SIGNING_P12 is not set, so this build is signed ad hoc. macOS will treat it as a new app: a new row in System Settings > Menu Bar and a new Keychain prompt for the API key."
+            echo "HATRACK_SIGNING=adhoc" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          printf '%s' "$P12" | base64 -D > "$RUNNER_TEMP/signing.p12"
+          security import "$RUNNER_TEMP/signing.p12" -k "$KEYCHAIN" -P "$P12_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/signing.p12"
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          # codesign finds an identity only in a keychain on the search list
+          security list-keychains -d user | xargs security list-keychains -d user -s "$KEYCHAIN"
+          echo "HATRACK_SIGNING=stable" >> "$GITHUB_ENV"
+
+      - name: Build Hatrack.app
+        run: ./Scripts/build-app.sh
+
+      - name: Check signature
+        run: |
+          codesign --verify --strict --verbose=2 Hatrack.app
+          REQUIREMENT="$(codesign -d -r- Hatrack.app 2>&1 | grep 'designated =>')"
+          echo "$REQUIREMENT"
+          # build-app.sh falls back to ad hoc rather than failing; a release that
+          # was meant to carry the stable identity must not ship without it.
+          if [ "$HATRACK_SIGNING" = stable ] && ! grep -q 'certificate leaf' <<< "$REQUIREMENT"; then
+            echo "::error::the signing secrets are set but the app was not signed with them"
+            exit 1
+          fi
+
+      - name: Build Hatrack.pkg
+        run: |
+          ./Scripts/build-pkg.sh Hatrack.pkg
+          pkgutil --payload-files Hatrack.pkg
+
+      - name: Upload workflow artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: Hatrack.pkg
+          path: Hatrack.pkg
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          NOTES="Download Hatrack.pkg below and open it to install Hatrack in /Applications. It is not notarized, so the first time macOS blocks it: right-click the .pkg and choose Open."
+          if [ "$HATRACK_SIGNING" = adhoc ]; then
+            WARNING="Warning: this build is signed ad hoc, not with the Hatrack signing certificate, so macOS treats it as a new app (a new menu bar settings row and a new Keychain prompt for the API key)."
+            NOTES="$NOTES"$'\n\n'"$WARNING"
+          fi
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            BODY="$(gh release view "$TAG" --json body --jq .body)"
+            if [ "$HATRACK_SIGNING" = adhoc ] && ! grep -qF "$WARNING" <<< "$BODY"; then
+              gh release edit "$TAG" --notes "$BODY"$'\n\n'"$WARNING"
+            fi
+          else
+            gh release create "$TAG" --verify-tag --title "Hatrack $TAG" --notes "$NOTES"
+          fi
+          gh release upload "$TAG" Hatrack.pkg --clobber
+
+      - name: Delete signing keychain
+        if: always()
+        run: |
+          if [ -n "${HATRACK_KEYCHAIN:-}" ]; then
+            security delete-keychain "$HATRACK_KEYCHAIN" || true
+          fi

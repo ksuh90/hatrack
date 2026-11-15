@@ -7,11 +7,19 @@
 # by running Contents/MacOS/Hatrack from a shell: macOS files a menu bar item
 # under the app that launched it first, so a shell launch puts Hatrack's icon
 # under the terminal's "Allow in the Menu Bar" switch for good.
+#
+# Environment, for release builds:
+#   HATRACK_VERSION   version written to Info.plist (default 1.0)
+#   HATRACK_KEYCHAIN  keychain holding the signing identity (default: the login
+#                     keychain); it must be on the keychain search list. When
+#                     set, the build never creates a certificate: it signs with
+#                     the one found there, or ad hoc.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG="${1:-release}"
 APP="$ROOT/Hatrack.app"
+VERSION="${HATRACK_VERSION:-1.0}"
 
 echo "building ($CONFIG)…"
 swift build --package-path "$ROOT" -c "$CONFIG"
@@ -39,7 +47,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>CFBundleExecutable</key><string>Hatrack</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleShortVersionString</key><string>$VERSION</string>
     <key>CFBundleVersion</key><string>1</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <!-- menu bar only: no Dock icon, no app switcher entry -->
@@ -54,10 +62,10 @@ PLIST
 # Keychain keeps trusting it with the API key. Ad-hoc signing would give every
 # build a new identity.
 IDENTITY_NAME="Hatrack Local Signing"
-LOGIN_KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
+KEYCHAIN="${HATRACK_KEYCHAIN:-$HOME/Library/Keychains/login.keychain-db}"
 
 identity_hash() {
-    security find-identity -p codesigning "$LOGIN_KEYCHAIN" 2>/dev/null |
+    security find-identity -p codesigning "$KEYCHAIN" 2>/dev/null |
         awk -v name="\"$IDENTITY_NAME\"" 'index($0, name) { print $2; exit }'
 }
 
@@ -83,7 +91,7 @@ CNF
         -keyout "$dir/key.pem" -out "$dir/cert.pem" >/dev/null 2>&1 &&
     /usr/bin/openssl pkcs12 -export -inkey "$dir/key.pem" -in "$dir/cert.pem" \
         -out "$dir/identity.p12" -passout pass:hatrack >/dev/null 2>&1 &&
-    security import "$dir/identity.p12" -k "$LOGIN_KEYCHAIN" -P hatrack \
+    security import "$dir/identity.p12" -k "$KEYCHAIN" -P hatrack \
         -T /usr/bin/codesign >/dev/null
     local status=$?
     rm -rf "$dir"
@@ -91,16 +99,16 @@ CNF
 }
 
 HASH="$(identity_hash)"
-if [ -z "$HASH" ]; then
+if [ -z "$HASH" ] && [ -z "${HATRACK_KEYCHAIN:-}" ]; then
     echo "creating code-signing certificate \"$IDENTITY_NAME\" in the login keychain (one time)…"
     create_identity || true
     HASH="$(identity_hash)"
 fi
 
-if [ -n "$HASH" ] && codesign --force --sign "$HASH" --timestamp=none "$APP" 2>/dev/null; then
+if [ -n "$HASH" ] && codesign --force --sign "$HASH" --keychain "$KEYCHAIN" --timestamp=none "$APP" 2>/dev/null; then
     echo "signed with \"$IDENTITY_NAME\""
 else
-    echo "warning: could not sign with \"$IDENTITY_NAME\"; signing ad hoc instead," \
+    echo "warning: could not sign with \"$IDENTITY_NAME\" from $KEYCHAIN; signing ad hoc instead," \
          "so macOS will treat this build as a new app"
     codesign --force --sign - --timestamp=none "$APP" 2>/dev/null || \
         echo "note: ad-hoc signing failed; the app still runs locally"
