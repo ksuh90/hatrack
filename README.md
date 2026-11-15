@@ -21,7 +21,19 @@ open Hatrack.app
 
 Then click the menu bar item, paste an [AeroDataBox](https://rapidapi.com/aedbx-aedbx/api/aerodatabox) RapidAPI key (free tier), and type a flight number.
 
-The key is stored in your Keychain. Because local builds are ad-hoc signed, macOS asks permission for it again after each rebuild.
+Always start the app with `open` (or from Finder or Spotlight; `open -n` for a second copy), never by running `Hatrack.app/Contents/MacOS/Hatrack` from a shell: macOS files a menu bar item under whichever app launched it first, so a shell launch leaves Hatrack's icon under your terminal's switch in System Settings > Menu Bar > Allow in the Menu Bar.
+
+The key is stored in your Keychain. The first time a build reads it, macOS asks; choose Always Allow and later rebuilds keep that permission.
+
+### Local signing
+
+The first build creates a self-signed code-signing certificate, "Hatrack Local Signing", in your login keychain, and every build after that signs with it. Each rebuild is then the same app to macOS: one Hatrack row in the menu bar settings, and no new Keychain prompt per build. Only `codesign` may use the certificate's key, so building needs no password. If the certificate cannot be used (for example, the login keychain is locked), the build signs ad hoc and says so.
+
+To remove it:
+
+```sh
+security delete-identity -c "Hatrack Local Signing" ~/Library/Keychains/login.keychain-db
+```
 
 ## Frugal by design
 
